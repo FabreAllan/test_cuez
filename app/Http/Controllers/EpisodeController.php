@@ -10,6 +10,10 @@ use Illuminate\Support\Str;
 
 class EpisodeController extends Controller
 {
+    /**
+     * @param Episode $episode
+     * @return JsonResponse
+     */
     public function duplicate(Episode $episode): JsonResponse
     {
         $duplication = EpisodeDuplication::create([
@@ -29,6 +33,10 @@ class EpisodeController extends Controller
         ], 202);
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return JsonResponse
+     */
     public function duplicationStatus(EpisodeDuplication $duplication): JsonResponse
     {
         return response()->json([

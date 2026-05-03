@@ -1,309 +1,389 @@
-I designed an asynchronous solution based on Laravel queues, batch processing, short-lived transactions, a tracking table, and an idempotent mapping strategy.
+# Episode Duplication Technical Test
 
-The architecture is compatible with AWS services such as SQS and CloudWatch. However, as my hands-on experience is primarily with S3, I focused on integrating S3-related aspects where relevant.
+This project demonstrates a scalable and resilient approach to duplicate a deeply nested Episode structure in a Laravel application.
 
----
+## Context
 
-## Proposed Approach
+An Episode contains a nested hierarchy:
 
-The duplication is handled asynchronously.
-The HTTP request only initiates the process and delegates the actual duplication to a background job.
-
+```txt
+Episode
+ └── Parts
+      └── Articles
+           └── Blocks
+                ├── BlockFields
+                └── Medias
 ```
+Each level can contain many children, so the duplication process must be asynchronous, scalable, observable and retry-safe.
+
+Technical Stack
+Laravel
+PHP 8.3
+MySQL 8
+Redis
+Laravel Queues
+Docker
+phpMyAdmin
+PHPUnit / Feature tests
+
+Redis is used only as the queue driver.
+The database remains the source of truth for duplication status, mappings, progress and errors.
+
+Architecture
 User
- └── POST /episodes/{id}/duplicate
+ └── POST /api/episodes/{id}/duplicate
       └── Create episode_duplications record
            └── Dispatch DuplicateEpisodeJob
-                └── Queue (Redis)
+                └── Redis Queue
                      └── Worker processes duplication in batches
-```
 
-Immediate API response:
+The HTTP request only starts the duplication process.
+The actual duplication is handled asynchronously by a queue worker.
 
-```json
+Main Concepts
+
+This implementation focuses on:
+
+asynchronous processing
+Redis queue usage
+batch processing with chunkById
+short-lived database transactions
+idempotency
+safe retries
+progress tracking
+structured logs
+failure recovery
+minimal impact on other users
+Database Tracking
+episode_duplications
+
+Tracks the duplication lifecycle:
+
+source episode
+target episode
+status
+progress
+metadata
+error message
+timestamps
+duplication_mappings
+
+Stores old ID to new ID mappings.
+
+This makes the duplication idempotent and retry-safe.
+
+Example:
+
+old part ID 1 → new part ID 24
+old article ID 7 → new article ID 41
+
+If a job is retried, already duplicated entities are skipped.
+
+Docker Installation
+1. Clone the project
+git clone <repository-url>
+cd episode-duplication-technical-test
+2. Copy environment file
+cp .env.example .env
+3. Configure .env
+APP_NAME="Episode Duplication"
+APP_ENV=local
+APP_DEBUG=true
+APP_URL=http://localhost:8000
+
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=episode_duplication
+DB_USERNAME=episode_user
+DB_PASSWORD=episode_pass
+
+QUEUE_CONNECTION=redis
+
+REDIS_CLIENT=predis
+REDIS_HOST=redis
+REDIS_PASSWORD=null
+REDIS_PORT=6379
+4. Start Docker
+docker compose up -d --build
+5. Install dependencies
+docker compose exec app composer install
+6. Generate app key
+docker compose exec app php artisan key:generate
+7. Run migrations and seeders
+docker compose exec app php artisan migrate:fresh --seed
+Services
+Service	URL
+Laravel API	http://localhost:8000
+phpMyAdmin	http://localhost:8081
+MySQL from host	127.0.0.1:3307
+MySQL inside Docker	mysql:3306
+Redis inside Docker	redis:6379
+
+phpMyAdmin credentials:
+
+Server: mysql
+Username: episode_user
+Password: episode_pass
+Database: episode_duplication
+Queue Worker
+
+The worker is defined in Docker and processes jobs from Redis.
+
+To view worker logs:
+
+docker compose logs -f worker
+
+To manually run the worker:
+
+docker compose exec app php artisan queue:work redis --queue=episode-duplications
+API Endpoints
+Start duplication
+POST /api/episodes/{episode}/duplicate
+
+Example:
+
+curl -X POST http://localhost:8000/api/episodes/1/duplicate
+
+Response:
+
 {
   "message": "Duplication has started",
   "duplication_id": "uuid",
   "status": "pending"
 }
-```
+Check duplication status
+GET /api/episode-duplications/{duplication}
 
----
+Example:
 
-## Tracking Tables
+curl http://localhost:8000/api/episode-duplications/{duplication_id}
 
-This structure provides full visibility over the duplication lifecycle, enabling us to track the current status, the source and target episodes, the progression of the process, and capture any errors during execution.
+Response example:
 
-### episode_duplications
-
-Tracks the lifecycle of the duplication:
-
-```php
-Schema::create('episode_duplications', function (Blueprint $table) {
-    $table->uuid('id')->primary();
-    $table->foreignId('source_episode_id')->constrained('episodes');
-    $table->foreignId('target_episode_id')->nullable()->constrained('episodes');
-
-    $table->string('status'); // pending, processing, completed, failed
-    $table->unsignedInteger('progress')->default(0);
-    $table->json('metadata')->nullable();
-    $table->text('error_message')->nullable();
-
-    $table->timestamps();
-    $table->timestamp('finished_at')->nullable();
-});
-```
-
-### duplication_mappings
-
-Ensures idempotency and safe retries:
-
-```php
-Schema::create('duplication_mappings', function (Blueprint $table) {
-    $table->id();
-    $table->uuid('duplication_id');
-
-    $table->string('entity_type');
-    $table->unsignedBigInteger('old_id');
-    $table->unsignedBigInteger('new_id');
-
-    $table->timestamps();
-
-    $table->unique(['duplication_id', 'entity_type', 'old_id']);
-});
-```
-
----
-
-## Controller
-
-```php
-public function duplicate(Episode $episode): JsonResponse
 {
-    $duplication = EpisodeDuplication::create([
-        'id' => Str::uuid(),
-        'source_episode_id' => $episode->id,
-        'status' => 'pending',
-        'progress' => 0,
-    ]);
-
-    DuplicateEpisodeJob::dispatch($duplication->id)
-        ->onQueue('episode-duplications');
-
-    return response()->json([
-        'message' => 'Duplication has started',
-        'duplication_id' => $duplication->id,
-        'status' => $duplication->status,
-    ], 202);
+  "id": "uuid",
+  "status": "completed",
+  "progress": 100,
+  "target_episode_id": 2,
+  "error_message": null
 }
-```
+Fixtures / Seeders
 
-Status endpoint:
+The project includes seeders to generate realistic nested data.
 
-```php
-public function status(EpisodeDuplication $duplication): JsonResponse
-{
-    return response()->json([
-        'id' => $duplication->id,
-        'status' => $duplication->status,
-        'progress' => $duplication->progress,
-        'target_episode_id' => $duplication->target_episode_id,
-        'error_message' => $duplication->error_message,
-    ]);
-}
-```
+Generated structure example:
 
----
+Episodes
+ └── Parts
+      └── Articles
+           └── Blocks
+                ├── BlockFields
+                └── Medias
 
-## Job Implementation
+Run fixtures:
 
-```php
-class DuplicateEpisodeJob implements ShouldQueue
-{
-    public int $tries = 5;
-    public int $timeout = 900;
-    public int $backoff = 60;
+docker compose exec app php artisan migrate:fresh --seed
 
-    public function __construct(public string $duplicationId) {}
+This allows testing the duplication flow with real nested data.
 
-    public function handle(EpisodeDuplicationService $service): void
-    {
-        $duplication = EpisodeDuplication::findOrFail($this->duplicationId);
+Tests
 
-        try {
-            $duplication->update(['status' => 'processing']);
+Feature tests are included to validate:
 
-            Log::info('Episode duplication started', [
-                'duplication_id' => $duplication->id,
-            ]);
+duplication job dispatching
+status endpoint
+job execution
+idempotency behavior
 
-            $service->duplicate($duplication);
+Run tests:
 
-            $duplication->update([
-                'status' => 'completed',
-                'progress' => 100,
-                'finished_at' => now(),
-            ]);
+docker compose exec app php artisan test
 
-        } catch (Throwable $e) {
-            $duplication->update([
-                'status' => 'failed',
-                'error_message' => $e->getMessage(),
-            ]);
+If needed, clear config before running tests:
 
-            Log::error('Episode duplication failed', [
-                'duplication_id' => $duplication->id,
-                'error' => $e->getMessage(),
-            ]);
+docker compose exec app php artisan config:clear
+Manual Validation Flow
+1. Seed the database
+docker compose exec app php artisan migrate:fresh --seed
+2. Check that an episode exists
+docker compose exec app php artisan tinker
+\App\Models\Episode::first();
+3. Start duplication
+curl -X POST http://localhost:8000/api/episodes/1/duplicate
+4. Check worker logs
+docker compose logs -f worker
+5. Check duplication status
+curl http://localhost:8000/api/episode-duplications/{duplication_id}
+6. Verify database tables
 
-            throw $e;
-        }
-    }
-}
-```
+In phpMyAdmin, check:
 
-The job is executed asynchronously by Laravel queue workers.
-Redis is used strictly as the queue driver, allowing fast job dispatching and efficient background processing.
+episodes
+episode_duplications
+duplication_mappings
+parts
+articles
+blocks
+block_fields
+medias
 
----
+Expected result:
 
-## Transactions Strategy
+a new episode is created
+nested data is duplicated
+mappings are stored
+duplication status becomes completed
+progress becomes 100
+Idempotency
 
-I avoid using a single long-running transaction.
+The duplication process is designed to be retry-safe.
 
-Instead, I use short-lived transactions per batch, which:
+Before duplicating an entity, the system checks the duplication_mappings table.
 
-* reduce lock duration
-* prevent deadlocks
-* improve scalability
-* allow partial recovery
+If the entity has already been duplicated, it is skipped.
 
----
+This protects the system if:
 
-## Batch Duplication
+a worker crashes
+a job is retried
+the process is interrupted
+the same step is executed again
 
-Each level is duplicated independently using chunking:
+A unique constraint prevents duplicate mappings:
 
-```php
-Part::where('episode_id', $sourceEpisode->id)
-    ->orderBy('id')
-    ->chunkById(500, function ($parts) use ($targetEpisode, $duplication) {
-        DB::transaction(function () use ($parts, $targetEpisode, $duplication) {
-            foreach ($parts as $part) {
-                if ($this->alreadyDuplicated($duplication, 'part', $part->id)) {
-                    continue;
-                }
+duplication_id + entity_type + old_id
+Transactions
 
-                $newPart = $part->replicate();
-                $newPart->episode_id = $targetEpisode->id;
-                $newPart->save();
+The system avoids one large transaction.
 
-                $this->saveMapping($duplication, 'part', $part->id, $newPart->id);
-            }
-        });
-    });
-```
+Instead, it uses short-lived transactions per batch.
 
-Same logic applies to all levels:
-Parts → Articles → Blocks → BlockFields → Medias
+This approach:
 
----
-
-## Idempotency & Failure Recovery
-
-To ensure safe retries, each duplicated entity is tracked in `duplication_mappings`.
-
-Before duplication, the system checks whether the entity was already processed.
-If not, it duplicates and stores the mapping.
-
-A unique constraint guarantees consistency and prevents race conditions.
-
-This ensures that even if:
-
-* a worker crashes
-* a job is retried
-* the process is interrupted
-
-the duplication can safely resume without creating duplicate data.
-
----
-
-## Medias Handling
-
-If multiple episodes can reference the same S3 file, I only duplicate the database record:
-
-```php
-$newMedia = $media->replicate();
-$newMedia->block_id = $newBlockId;
-$newMedia->save();
-```
-
-This approach is fast and avoids unnecessary file duplication.
-
----
-
-## Impact on Other Users
-
-This design minimizes impact by:
-
-* avoiding long HTTP requests
-* using background processing
-* relying on short-lived transactions
+reduces database lock duration
+limits deadlock risks
+improves scalability
+allows partial recovery
+avoids blocking other users for too long
+Impact on Other Users
 
 The source episode remains readable and editable during duplication.
 
-The duplicated episode is based on a snapshot at the start of the process.
-Changes made afterward are not included.
+The duplicated episode is created with a temporary status:
+
+duplicating
+
+Once the process is complete, the target episode becomes:
+
+draft
+
+The duplication is based on the source data at the time the process starts.
+Changes made afterward are not included in the current duplication.
 
 This avoids long locks and keeps the platform responsive.
 
----
+Observability
 
-## Observability
+The system provides observability through:
 
-Observability is essential for asynchronous processes.
+structured Laravel logs
+duplication status in database
+progress tracking
+error storage
+worker logs
 
-* Structured logs (Laravel Log) track each step
-* The `episode_duplications` table provides real-time progress
-* Metrics provide system-level visibility
+Useful metrics to monitor in a production environment:
 
-Key metrics:
+duplication_started
+duplication_completed
+duplication_failed
+duplication_duration
 
-* duplication_started
-* duplication_completed
-* duplication_failed
-* duplication_duration
+These metrics help detect:
 
-These metrics help monitor system health, detect regressions, and identify bottlenecks.
+failures
+performance regressions
+overloaded workers
+long-running duplications
+Redis Usage
 
----
+Redis is used strictly as the Laravel queue driver.
 
-## Conclusion
+QUEUE_CONNECTION=redis
 
-This solution provides a scalable, resilient, and production-ready approach to duplicating complex hierarchical data.
+Redis is not used to store critical duplication state.
+
+The database remains responsible for:
+
+duplication status
+progress
+mappings
+errors
+final consistency
+Production Considerations
+
+For a production environment, the same architecture could be extended with:
+
+AWS SQS instead of Redis for more durable queues
+AWS CloudWatch for logs and metrics
+AWS S3 for media storage
+horizontal scaling of workers
+alerting on failed duplications
+queue monitoring with Laravel Horizon if Redis is used
+Useful Commands
+
+Start containers:
+
+docker compose up -d
+
+Stop containers:
+
+docker compose down
+
+Rebuild containers:
+
+docker compose up -d --build
+
+Run migrations:
+
+docker compose exec app php artisan migrate
+
+Fresh migration with fixtures:
+
+docker compose exec app php artisan migrate:fresh --seed
+
+Run tests:
+
+docker compose exec app php artisan test
+
+View app logs:
+
+docker compose logs -f app
+
+View worker logs:
+
+docker compose logs -f worker
+
+List routes:
+
+docker compose exec app php artisan route:list
+
+Clear config:
+
+docker compose exec app php artisan config:clear
+Conclusion
+
+This solution provides a production-oriented approach to duplicating complex hierarchical data.
 
 It ensures:
 
-* asynchronous processing
-* controlled database usage
-* idempotency and safe retries
-* minimal impact on other users
-* compatibility with AWS infrastructure
+asynchronous processing
+controlled database usage
+idempotency
+safe retries
+progress tracking
+failure visibility
+minimal impact on other users
 
-The system can efficiently handle both small and very large episodes while maintaining performance and data consistency.
-
-
----
-
-## RUN 
-
-```php
-composer install
-cp .env.example .env
-php artisan key:generate
-php artisan migrate
-php artisan queue:work redis --queue=episode-duplications
-```
-
-
-The local development stack uses Docker with PHP, MySQL, Redis and phpMyAdmin. Redis is used as the Laravel queue driver, while MySQL remains the source of truth for duplication status, mappings and progress.
+The system can handle both small and large episodes while maintaining performance and data consistency.

@@ -24,6 +24,11 @@ class DuplicateEpisodeJob implements ShouldQueue
         public string $duplicationId
     ) {}
 
+    /**
+     * @param EpisodeDuplicationService $service
+     * @return void
+     * @throws Throwable
+     */
     public function handle(EpisodeDuplicationService $service): void
     {
         $duplication = EpisodeDuplication::findOrFail($this->duplicationId);

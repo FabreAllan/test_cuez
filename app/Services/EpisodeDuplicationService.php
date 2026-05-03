@@ -17,6 +17,10 @@ class EpisodeDuplicationService
 {
     private const CHUNK_SIZE = 500;
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return void
+     */
     public function duplicate(EpisodeDuplication $duplication): void
     {
         $sourceEpisode = Episode::findOrFail($duplication->source_episode_id);
@@ -43,6 +47,11 @@ class EpisodeDuplicationService
         ]);
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @param Episode $sourceEpisode
+     * @return Episode
+     */
     private function createTargetEpisode(EpisodeDuplication $duplication, Episode $sourceEpisode): Episode
     {
         if ($duplication->target_episode_id) {
@@ -64,6 +73,12 @@ class EpisodeDuplicationService
         });
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @param Episode $sourceEpisode
+     * @param Episode $targetEpisode
+     * @return void
+     */
     private function duplicateParts(EpisodeDuplication $duplication, Episode $sourceEpisode, Episode $targetEpisode): void
     {
         Part::where('episode_id', $sourceEpisode->id)
@@ -85,6 +100,10 @@ class EpisodeDuplicationService
             });
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return void
+     */
     private function duplicateArticles(EpisodeDuplication $duplication): void
     {
         DuplicationMapping::where('duplication_id', $duplication->id)
@@ -113,6 +132,10 @@ class EpisodeDuplicationService
             }, 'id');
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return void
+     */
     private function duplicateBlocks(EpisodeDuplication $duplication): void
     {
         DuplicationMapping::where('duplication_id', $duplication->id)
@@ -141,6 +164,10 @@ class EpisodeDuplicationService
             }, 'id');
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return void
+     */
     private function duplicateBlockFields(EpisodeDuplication $duplication): void
     {
         DuplicationMapping::where('duplication_id', $duplication->id)
@@ -169,6 +196,10 @@ class EpisodeDuplicationService
             }, 'id');
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @return void
+     */
     private function duplicateMedias(EpisodeDuplication $duplication): void
     {
         DuplicationMapping::where('duplication_id', $duplication->id)
@@ -197,6 +228,12 @@ class EpisodeDuplicationService
             }, 'id');
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @param string $entityType
+     * @param int $oldId
+     * @return bool
+     */
     private function alreadyDuplicated(EpisodeDuplication $duplication, string $entityType, int $oldId): bool
     {
         return DuplicationMapping::where('duplication_id', $duplication->id)
@@ -205,6 +242,13 @@ class EpisodeDuplicationService
             ->exists();
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @param string $entityType
+     * @param int $oldId
+     * @param int $newId
+     * @return void
+     */
     private function saveMapping(EpisodeDuplication $duplication, string $entityType, int $oldId, int $newId): void
     {
         DuplicationMapping::firstOrCreate([
@@ -216,6 +260,12 @@ class EpisodeDuplicationService
         ]);
     }
 
+    /**
+     * @param EpisodeDuplication $duplication
+     * @param int $progress
+     * @param string $step
+     * @return void
+     */
     private function updateProgress(EpisodeDuplication $duplication, int $progress, string $step): void
     {
         $duplication->update([
