@@ -1,0 +1,72 @@
+services:
+    app:
+        image: php:8.3-cli
+        container_name: episode_app
+        working_dir: /var/www/html
+        volumes:
+            - ./:/var/www/html
+        ports:
+            - "8000:8000"
+        depends_on:
+            - mysql
+            - redis
+        command: >
+            sh -c "
+            apt-get update &&
+            apt-get install -y unzip git curl libzip-dev default-mysql-client &&
+            docker-php-ext-install pdo pdo_mysql zip &&
+            php artisan serve --host=0.0.0.0 --port=8000
+            "
+
+    worker:
+        image: php:8.3-cli
+        container_name: episode_worker
+        working_dir: /var/www/html
+        volumes:
+            - ./:/var/www/html
+        depends_on:
+            - mysql
+            - redis
+        command: >
+            sh -c "
+            apt-get update &&
+            apt-get install -y unzip git curl libzip-dev default-mysql-client &&
+            docker-php-ext-install pdo pdo_mysql zip &&
+            php artisan queue:work redis --queue=episode-duplications
+            "
+
+    mysql:
+        image: mysql:8.0
+        container_name: episode_mysql
+        restart: unless-stopped
+        environment:
+            MYSQL_DATABASE: episode_duplication
+            MYSQL_USER: episode_user
+            MYSQL_PASSWORD: episode_pass
+            MYSQL_ROOT_PASSWORD: root
+        ports:
+            - "3307:3306"
+        volumes:
+            - mysql_data:/var/lib/mysql
+
+    redis:
+        image: redis:7-alpine
+        container_name: episode_redis
+        restart: unless-stopped
+        ports:
+            - "6379:6379"
+
+    phpmyadmin:
+        image: phpmyadmin/phpmyadmin
+        container_name: episode_phpmyadmin
+        restart: unless-stopped
+        ports:
+            - "8081:80"
+        environment:
+            PMA_HOST: mysql
+            PMA_PORT: 3306
+        depends_on:
+            - mysql
+
+volumes:
+    mysql_data:
